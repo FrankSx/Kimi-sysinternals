@@ -1,0 +1,44 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>part5-totalrecall</title><style>body{background:#0d1117;color:#c9d1d9;font:16px/1.7 Georgia,serif;max-width:860px;margin:0 auto;padding:40px 20px}
+h1{font:26px ui-monospace,monospace;color:#58a6ff;border-bottom:2px solid #58a6ff;padding-bottom:10px}
+h2{font:20px ui-monospace,monospace;color:#f0883e;margin-top:44px;border-bottom:1px solid #30363d;padding-bottom:6px}
+h3{font:16px ui-monospace,monospace;color:#3fb950;margin-top:28px}
+pre.c{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow-x:auto;font:13px/1.6 ui-monospace,monospace;color:#a5d6ff}
+code.i{background:#161b22;padding:1px 6px;border-radius:4px;font:14px ui-monospace,monospace;color:#79c0ff}
+blockquote{border-left:4px solid #f0883e;margin:16px 0;padding:8px 16px;background:#161b22;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:14px ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;vertical-align:top}th{background:#161b22;color:#58a6ff}
+hr{border:none;border-top:1px solid #30363d;margin:32px 0}ul,ol{margin:8px 0;padding-left:28px}li{margin:4px 0}</style></head><body><h1>Kimi Sysinternals, Part 5: TotalRecall — The Memory Layer We Built on the Map</h1>
+<p>*Everything from Parts 1–4 became components: a harvester, a dream engine, a reckoning layer, a controller, a carrier inside a Kimi project, and an auth escrow. This is the architecture and the live results.*</p>
+<hr>
+<h2>The Thesis</h2>
+<p>Memory slots are an index, not a memory. The corpus — every conversation&#x27;s text, code, tool calls, thoughts, files — is the real asset, but it was unreachable: no search, no cross-conversation view, no consolidation. TotalRecall turns the block stream (Part 3) into a long-term, self-growing memory, with the dream system (Part 4&#x27;s open slot) as its engine.</p>
+<h2>The Pipeline</h2>
+<pre class='c'><code>
+harvest (ListFeeds→GetChat→ListMessages, cursor-paginated, checkpointed, idempotent)
+   → artifacts (typed: text / thought(+summary) / code(+output) / file(sha256-deduped))
+   → index (SQLite FTS5 + correlation edges: shared_file w=1.0, term-overlap cosine)
+   → recall (content+title, provenance-ranked) + correlate (cross-conversation link graph)
+</code></pre>
+<p>Measured on the real account: 899 conversations registered, per-conversation harvest at ~3.7s, mid-conversation checkpointing so a single 500-artifact chat can grind across timeouts without loss.</p>
+<h2>The Dream Engine (neuro-inspired, inspectable)</h2>
+<p>Phases, per the reactivation / selective-prioritization / memory-updating model:</p>
+<ul>
+<li><strong>REACTIVATION</strong> — replay each episode; score events: decisions +1, <strong>errors +1.5</strong> (failures are most salient), emphasis +1, discovery +1</li>
+<li><strong>CONSOLIDATE</strong> — <code class='i'>episode_salience = log(events) × (1 + 0.15·edge_degree) × e^(−age/60)</code></li>
+<li><strong>CO-ACTIVATION</strong> — an episode lights up remote memory (edges + neocortex nodes sharing its project)</li>
+<li><strong>UPDATING</strong> — the neocortex node <strong>merges in place</strong> (facts deduped, open-state refreshed, activation_count++)</li>
+<li><strong>FADING</strong> — exponential decay; faded episodes deprioritized, never deleted</li>
+</ul>
+<p>Live: 25 episodes distilled into neocortex nodes that genuinely aggregated remote conversations (a <code class='i'>svg</code> node co-activating 6 conversations; a <code class='i'>content</code> node holding 9).</p>
+<h2>RECKONING — dreams as preemptive thought-reckoning time</h2>
+<p>A dream scans a conversation, extends its research area against the corpus, and forms an <strong>informed memory</strong>: understanding (merged with the neocortex), momentum (next threads — *including remote ones*), co-relations (weighted, with reasons). Live proof: reckoning the PDF-XSS conversation surfaced a next-move from a *different* conversation (MESCALINE APEX) — cross-conversation momentum, working.</p>
+<h2>Multi-Round Dream Dialogues</h2>
+<p>Dreams became dialogues: round 1 posts the reckoning; round 2 injects <strong>remote-memory snippets</strong> (real corpus hits); round 3 resolves tensions with explicit <code class='i'>ASSUMPTION:</code> markers; round 4 finalizes a <code class='i'>[STATE]{...}</code> block + three memory-slot lines. The model&#x27;s round-4 output contained understanding the extractive reckoning lacked — the dialogue genuinely *reasoned forward* with the corpus as ground truth.</p>
+<h2>The Carrier — server-side memory inside a Kimi project</h2>
+<p>The insight that made the local DB a cache: <strong>a Project is a persistent, conversation-native container.</strong> <code class='i'>TotalRecall Dreams</code> (use_memory=true) holds one dream-episode conversation per research area, each carrying a <code class='i'>[STATE]</code> block + model narration, readable from any session on any device. The controller conversation triages briefs (<code class='i'>[ROUTE]{stream, priority, mode}</code>) and owns a wholesale-rewritten schedule STATE — it even *corrected its own routing* once a new stream existed.</p>
+<p>The send protocol that powers it (cracked from a collaborator&#x27;s captured send script): <strong>Connect-framed bodies</strong> — <code class='i'>0x00 + BE32 length + JSON</code>; raw JSON gets read as frame headers and dies detail-less. New chat: <strong>omit chat_id entirely</strong> (the server mints it; a client-forged id 404s). Appends: <code class='i'>parent_id = newest message id</code>.</p>
+<h2>The Auth Escrow — sandbox moves without pasting tokens</h2>
+<p>The last-mile problem: fresh sandboxes need credentials. The bridge uses the one zero-auth byte channel (Part 3&#x27;s signUrls): encrypt the vault with a passphrase (PBKDF2 200k + HMAC keystream), upload via the multipart file endpoint, hand the next sandbox <strong>a URL + a passphrase</strong>. Zero JWTs cross chat; zero gateway auth needed before the vault exists.</p>
+<h2>Why This Matters</h2>
+<p>The platform gave us the map (Part 1), the keys (Part 2), the schema (Part 3), and an open slot (Part 4). What we added is the layer that makes a decade of conversations *compound* — and every piece of it runs on verified, documented surface.</p>
+<p>*Finale: Part 6 — the methodology and the bug ledger: how the recon was actually done, and every trap we fell into so you don&#x27;t have to.*</p></body></html>

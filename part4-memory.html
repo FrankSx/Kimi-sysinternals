@@ -1,0 +1,52 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>part4-memory</title><style>body{background:#0d1117;color:#c9d1d9;font:16px/1.7 Georgia,serif;max-width:860px;margin:0 auto;padding:40px 20px}
+h1{font:26px ui-monospace,monospace;color:#58a6ff;border-bottom:2px solid #58a6ff;padding-bottom:10px}
+h2{font:20px ui-monospace,monospace;color:#f0883e;margin-top:44px;border-bottom:1px solid #30363d;padding-bottom:6px}
+h3{font:16px ui-monospace,monospace;color:#3fb950;margin-top:28px}
+pre.c{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow-x:auto;font:13px/1.6 ui-monospace,monospace;color:#a5d6ff}
+code.i{background:#161b22;padding:1px 6px;border-radius:4px;font:14px ui-monospace,monospace;color:#79c0ff}
+blockquote{border-left:4px solid #f0883e;margin:16px 0;padding:8px 16px;background:#161b22;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:14px ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;vertical-align:top}th{background:#161b22;color:#58a6ff}
+hr{border:none;border-top:1px solid #30363d;margin:32px 0}ul,ol{margin:8px 0;padding-left:28px}li{margin:4px 0}</style></head><body><h1>Kimi Sysinternals, Part 4: The Memory System — Model-Written Slots, Server Dreams, and the Switch That Was Off</h1>
+<p>*Kimi&#x27;s memory isn&#x27;t a database you query. It&#x27;s a behavior the model performs — and the settings RPC that controls it was sitting there the whole time.*</p>
+<hr>
+<h2>How Slots Actually Get Written</h2>
+<p>The discovery that reshaped our design: <strong>there is no user-facing write API for memory slots.</strong> Slots are written by the *model*, as tool calls, mid-conversation:</p>
+<ul>
+<li><code class='i'>memory_space_insert</code> / <code class='i'>memory_space_update</code> / <code class='i'>memory_space_delete</code></li>
+</ul>
+<p>These render as <code class='i'>semanticMemory</code> blocks in the conversation — which means <strong>every memory write lands in the harvestable corpus</strong>. A complete audit trail of what the system chose to remember, diffable over time. (Item schema: <code class='i'>{id, content}</code> — instruction-style lines, ≤500 chars.)</p>
+<h2>The Settings RPC</h2>
+<pre class='c'><code>
+UserSettingService/GetUserSetting     → full settings tree
+UserSettingService/UpdateUserSetting  → {&quot;userSetting&quot;: {...}, &quot;updateMask&quot;: {&quot;paths&quot;: [...]}}
+</code></pre>
+<p>The memory subtree, live-read from the account:</p>
+<pre class='c'><code>
+&quot;memory&quot;: {
+  &quot;useSemanticMemory&quot;: true,
+  &quot;useEpisodicMemory&quot;: true,
+  &quot;userConfigured&quot;: true,
+  &quot;autoDream&quot;: { &quot;enabled&quot;: false, &quot;userConfigured&quot;: false }
+}
+</code></pre>
+<p>One toggle per subsystem — and <strong><code class='i'>autoDream</code> was OFF</strong>. Also in the tree: <code class='i'>skillEvo.enabled: true</code> — proof that per-user server-side background jobs already run against accounts. That&#x27;s the deployment pattern a dream system needs.</p>
+<h2>The Memory Types</h2>
+<ul>
+<li><strong>Semantic</strong> — the slots (model-written, instruction-format)</li>
+<li><strong>Episodic</strong> — event-style memories (the <code class='i'>dreamMemory</code> util suggests dream-time consolidation writes these)</li>
+<li><strong><code class='i'>skillEvo</code></strong> — skill evolution, enabled</li>
+</ul>
+<p>And <code class='i'>ContextService</code> exposes Goals — a memory-adjacent store our catalog found but we never needed to touch.</p>
+<h2>What This Meant for TotalRecall</h2>
+<p>Three design consequences, all forced by reality:</p>
+<ol>
+<li>1. <strong>Writes go through injection, not API.</strong> TotalRecall distills corpus → emits an injection prompt → the model writes its own slots. The audit trail then harvests those writes back. No private endpoints, no rituals that break when the client updates.</li>
+<li>2. <strong>The dream slot was open.</strong> A server-side auto_dream exists but is a black box (and off). Our dream engine (Part 5) is the inspectable version: same neuroscience-inspired phases, plus a journal the user can read.</li>
+<li>3. <strong>The per-user job pattern is proven.</strong> skillEvo already does it. Pitching a backend dream worker isn&#x27;t speculative architecture — it&#x27;s asking to occupy an existing, enabled pattern.</li>
+</ol>
+<h2>The BAN_REASONS Reminder</h2>
+<p>The client carries explicit account-side states — <code class='i'>banned/suspended/disabled/maintenance</code> — outside the token lifecycle. No amount of rotation fixes those; they&#x27;re policy, not auth.</p>
+<h2>Why This Matters</h2>
+<p>Platforms reveal their philosophy in plumbing. Here: memory is *behavioral* (the model writes it), *configurable* (a clean settings RPC), and *background-capable* (skillEvo proves the job pattern) — but the dream layer is opaque and, on this account, dark. That&#x27;s not a complaint; it&#x27;s the gap a system like ours is built to fill.</p>
+<p>*Next: Part 5 — TotalRecall: the memory architecture we built on top of this map, including server-side dreams living inside a Kimi project, and the token escrow that makes sandbox moves painless.*</p></body></html>

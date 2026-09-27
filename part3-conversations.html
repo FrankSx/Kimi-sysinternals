@@ -1,0 +1,55 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>part3-conversations</title><style>body{background:#0d1117;color:#c9d1d9;font:16px/1.7 Georgia,serif;max-width:860px;margin:0 auto;padding:40px 20px}
+h1{font:26px ui-monospace,monospace;color:#58a6ff;border-bottom:2px solid #58a6ff;padding-bottom:10px}
+h2{font:20px ui-monospace,monospace;color:#f0883e;margin-top:44px;border-bottom:1px solid #30363d;padding-bottom:6px}
+h3{font:16px ui-monospace,monospace;color:#3fb950;margin-top:28px}
+pre.c{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow-x:auto;font:13px/1.6 ui-monospace,monospace;color:#a5d6ff}
+code.i{background:#161b22;padding:1px 6px;border-radius:4px;font:14px ui-monospace,monospace;color:#79c0ff}
+blockquote{border-left:4px solid #f0883e;margin:16px 0;padding:8px 16px;background:#161b22;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:14px ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;vertical-align:top}th{background:#161b22;color:#58a6ff}
+hr{border:none;border-top:1px solid #30363d;margin:32px 0}ul,ol{margin:8px 0;padding-left:28px}li{margin:4px 0}</style></head><body><h1>Kimi Sysinternals, Part 3: The Conversation Data Model — Blocks, Threads, and Process-as-Data</h1>
+<p>*Every chat is a tree of messages; every message is a typed block stream; and the tool blocks are the closest thing to a session&#x27;s true memory.*</p>
+<hr>
+<h2>The RPC Shape</h2>
+<pre class='c'><code>
+ChatService/ListMessages  {&quot;chat_id&quot;: xid, &quot;page_size&quot;: 100, &quot;page_token&quot;: cursor}
+→ {&quot;messages&quot;: [...], &quot;nextPageToken&quot;: &quot;&lt;base64url cursor&gt;&quot;}   # cursor is EXCLUSIVE
+</code></pre>
+<p>Cursors chain cleanly — verified with a 3-page walk. (<code class='i'>ListFeeds</code> cursors work identically; both accept snake_case <code class='i'>page_token</code>.)</p>
+<h2>The Message Envelope</h2>
+<pre class='c'><code>
+{&quot;id&quot;: &quot;1a08001c-...&quot;, &quot;parentId&quot;: &quot;...&quot;, &quot;role&quot;: &quot;user|assistant&quot;,
+ &quot;status&quot;: &quot;MESSAGE_STATUS_COMPLETED&quot;, &quot;scenario&quot;: &quot;SCENARIO_CHAT&quot;,
+ &quot;createTime&quot;: &quot;...&quot;, &quot;isGoal&quot;: false, &quot;blocks&quot;: [...]}
+</code></pre>
+<p><code class='i'>parentId</code> chains turns into a thread tree — some messages have no parent (roots). Roles serialize lowercase (<code class='i'>user</code>, not <code class='i'>ROLE_USER</code>) — the gateway&#x27;s JSON mapping strips enum prefixes. IDs are XID-in-UUIDv8 (Part 1), so <code class='i'>createTime</code> order equals ID order.</p>
+<h2>The Block Union</h2>
+<p>Every block is <code class='i'>{id, parentId, messageId, createTime, &lt;type&gt;: payload}</code>:</p>
+<table>
+<tr><th>Type</th><th>Payload</th><th>What it really is</th></tr>
+<tr><td><code class='i'>text</code></td><td><code class='i'>{content}</code></td><td>the turn&#x27;s prose</td></tr>
+<tr><td><code class='i'>think</code></td><td><code class='i'>{content, summary}</code></td><td>reasoning + <strong>the model&#x27;s own TL;DR</strong></td></tr>
+<tr><td><code class='i'>tool</code></td><td><code class='i'>{toolCallId, name, args (JSON string), contents[], status}</code></td><td><strong>the session&#x27;s process record</strong></td></tr>
+<tr><td><code class='i'>file</code></td><td><code class='i'>{id, meta{sha256, contentType, sizeBytes}, blob{signUrl, previewUrl}, tokenCount}</code></td><td>attachments w/ time-limited direct URLs</td></tr>
+<tr><td><code class='i'>stage</code> / <code class='i'>multiStage</code></td><td><code class='i'>{name: STAGE_NAME_*, status}</code></td><td>pipeline timeline markers</td></tr>
+</table>
+<h2>Why Tool Blocks Are the Goldmine</h2>
+<p>For the <code class='i'>ipython</code> tool, <code class='i'>args</code> is <code class='i'>{&quot;code&quot;: &quot;...&quot;}</code> — the exact code — and <code class='i'>contents</code> is the joined output, <strong>errors included</strong>. A harvested conversation therefore preserves not just conclusions but *process*: every attempt, every <code class='i'>Traceback</code>, every retry. Months later, the corpus tells you what was tried, not just what worked.</p>
+<p>For files, <code class='i'>blob.signUrl</code> is an <strong>unauthenticated, time-limited</strong> direct download — the only zero-auth byte channel we found in the whole system (Part 5&#x27;s escrow rides on it).</p>
+<h2>Pagination Traps We Hit</h2>
+<ol>
+<li>1. <strong>XID truncation false-dupes:</strong> comparing IDs cut to 16 chars makes different messages look identical (shared timestamp prefix). Cost us one debugging round.</li>
+<li>2. <strong>Cursors are exclusive but sanity-check anyway</strong> — dedupe by full ID on ingest.</li>
+<li>3. <strong><code class='i'>page_size</code> caps</strong> below what you&#x27;d like; plan cursors, not big pages.</li>
+</ol>
+<h2>The Harvester&#x27;s Extraction Rules</h2>
+<p>Validated over a real 850-conversation corpus:</p>
+<ul>
+<li><code class='i'>think.content</code> → thought artifact (index <code class='i'>summary</code> as its title — free compression tier)</li>
+<li><code class='i'>tool.args</code> parsed per tool name → code artifact, output appended</li>
+<li><code class='i'>text</code> → text artifact; <code class='i'>file</code> → metadata + optional signUrl fetch, deduped by sha256</li>
+<li>Idempotent re-sync via content-hash dedupe; XID watermark for incrementals</li>
+</ul>
+<h2>Why This Matters</h2>
+<p>This schema is why &quot;export your chats&quot; was never enough — the value isn&#x27;t the transcript, it&#x27;s the typed block stream. A corpus built on blocks understands *code* differently from *thoughts* differently from *files*, and that semantic distinction is what makes downstream recall and dreaming possible.</p>
+<p>*Next: Part 4 — the memory system itself: model-written slots, the settings RPC, and the dream switch that was turned off.*</p></body></html>

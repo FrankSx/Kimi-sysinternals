@@ -1,0 +1,55 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>part2-auth</title><style>body{background:#0d1117;color:#c9d1d9;font:16px/1.7 Georgia,serif;max-width:860px;margin:0 auto;padding:40px 20px}
+h1{font:26px ui-monospace,monospace;color:#58a6ff;border-bottom:2px solid #58a6ff;padding-bottom:10px}
+h2{font:20px ui-monospace,monospace;color:#f0883e;margin-top:44px;border-bottom:1px solid #30363d;padding-bottom:6px}
+h3{font:16px ui-monospace,monospace;color:#3fb950;margin-top:28px}
+pre.c{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow-x:auto;font:13px/1.6 ui-monospace,monospace;color:#a5d6ff}
+code.i{background:#161b22;padding:1px 6px;border-radius:4px;font:14px ui-monospace,monospace;color:#79c0ff}
+blockquote{border-left:4px solid #f0883e;margin:16px 0;padding:8px 16px;background:#161b22;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:14px ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;vertical-align:top}th{background:#161b22;color:#58a6ff}
+hr{border:none;border-top:1px solid #30363d;margin:32px 0}ul,ol{margin:8px 0;padding-left:28px}li{margin:4px 0}</style></head><body><h1>Kimi Sysinternals, Part 2: The Auth Model — A Custom Token Pair in a Connect-RPC World</h1>
+<p>*Not OAuth2. Not JWT-bearer-simple. A two-token rotation system with its own RPC, its own death rules, and a 15-minute heartbeat.*</p>
+<hr>
+<h2>The Two Tokens</h2>
+<p>Both live in localStorage. Both are JWTs (HS512, iss <code class='i'>account</code>):</p>
+<ul>
+<li><strong>access_token</strong> — <code class='i'>typ: &quot;access&quot;</code>, exactly <strong>900 seconds</strong> of life. Claims carry the full identity envelope: <code class='i'>sub</code> (traffic id), <code class='i'>device_id</code>, <code class='i'>ssid</code> (session id), <code class='i'>region</code>, <code class='i'>membership.level</code>, <code class='i'>code_membership.level</code>, <code class='i'>jti</code>.</li>
+<li><strong>refresh_token</strong> — <code class='i'>typ: &quot;refresh&quot;</code>, <strong>sliding ~90-day</strong> expiry (a rotated token we minted carried ~3 months, not the original&#x27;s full remaining life).</li>
+</ul>
+<h2>The Rotation (Live-Proven)</h2>
+<pre class='c'><code>
+POST https://auth.kimi.ai/api/account.gateway.v1.AuthService/RefreshToken
+{&quot;refreshToken&quot;: &quot;&lt;current refresh token&gt;&quot;}
+→ {&quot;accessToken&quot;: &quot;&lt;new jwt&gt;&quot;, &quot;refreshToken&quot;: &quot;&lt;new refresh token&gt;&quot;}   # BOTH rotate
+</code></pre>
+<p>Three rules that will bite you:</p>
+<ol>
+<li>1. <strong>Rotation kills the old pair instantly.</strong> Two refreshers on one vault = death race. Serialize with a file lock.</li>
+<li>2. <strong>The browser also refreshes.</strong> If the browser wins the race, your vault&#x27;s pair is dead. Re-bootstrap, or accept the vault as the pair&#x27;s sole owner.</li>
+<li>3. <strong>One vault per device.</strong> The pair is bound to <code class='i'>device_id</code> (and the header family derived from its claims). Don&#x27;t copy vaults across machines.</li>
+</ol>
+<p>We rotated a real pair end-to-end from inside a session: mint → verify via <code class='i'>GetCurrentUser</code> → the whole lifecycle in one sitting.</p>
+<h2>The Client&#x27;s Own Implementation</h2>
+<p>The bundle&#x27;s <code class='i'>refreshAccessToken()</code> de-dupes concurrent refreshes with a promise singleton and writes both tokens back on success. It also carries a <code class='i'>BAN_REASONS</code> table — <code class='i'>banned/suspended/disabled/maintenance</code> are account-side states no rotation can fix.</p>
+<h2>The Gateway Access Recipe</h2>
+<p>With a valid pair, any /apiv2 call needs only:</p>
+<pre class='c'><code>
+headers = BROWSER_HEADERS | {
+    &quot;Authorization&quot;: f&quot;Bearer {access}&quot;,
+    &quot;X-Msh-Device-Id&quot;: claims[&quot;device_id&quot;],
+    &quot;X-Msh-Session-Id&quot;: claims[&quot;ssid&quot;],
+    &quot;X-Traffic-Id&quot;: claims[&quot;sub&quot;],
+}
+</code></pre>
+<p>No cookies. No shield header (the trustdecision fraud SDK adds <code class='i'>x-msh-shield-data</code> when active, but rotation worked without it in our region).</p>
+<h2>The Vault We Built</h2>
+<p><code class='i'>token_manager.py</code>: 0600 file, flock-serialized rotation, <code class='i'>ensure_fresh(min_ttl=120)</code> returns a ready header dict — the one-liner every harvester/bridge calls before any gateway request. Bootstrap = read the pair from localStorage, write the vault. From then on, the system mints its own access.</p>
+<h2>The Honest Caveats</h2>
+<ul>
+<li>Pasting tokens into chat is a bad habit with a 15-minute shelf life — Part 5&#x27;s escrow exists because of it.</li>
+<li>401 on refresh = pair dead = re-bootstrap. There is no recovery path around that.</li>
+<li>The ~90-day sliding window means even a perfect system must re-touch the vault quarterly.</li>
+</ul>
+<h2>Why This Matters</h2>
+<p>Long-lived automation against a chat platform usually dies on auth. Here, the auth is fully understood, fully implemented, and live-proven — which is what made everything else in this series possible.</p>
+<p>*Next: Part 3 — the conversation data model: blocks, threads, and why tool calls are the real memory of a session.*</p></body></html>

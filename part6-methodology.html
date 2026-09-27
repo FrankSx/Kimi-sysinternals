@@ -1,0 +1,57 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>part6-methodology</title><style>body{background:#0d1117;color:#c9d1d9;font:16px/1.7 Georgia,serif;max-width:860px;margin:0 auto;padding:40px 20px}
+h1{font:26px ui-monospace,monospace;color:#58a6ff;border-bottom:2px solid #58a6ff;padding-bottom:10px}
+h2{font:20px ui-monospace,monospace;color:#f0883e;margin-top:44px;border-bottom:1px solid #30363d;padding-bottom:6px}
+h3{font:16px ui-monospace,monospace;color:#3fb950;margin-top:28px}
+pre.c{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow-x:auto;font:13px/1.6 ui-monospace,monospace;color:#a5d6ff}
+code.i{background:#161b22;padding:1px 6px;border-radius:4px;font:14px ui-monospace,monospace;color:#79c0ff}
+blockquote{border-left:4px solid #f0883e;margin:16px 0;padding:8px 16px;background:#161b22;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:14px ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;vertical-align:top}th{background:#161b22;color:#58a6ff}
+hr{border:none;border-top:1px solid #30363d;margin:32px 0}ul,ol{margin:8px 0;padding-left:28px}li{margin:4px 0}</style></head><body><h1>Kimi Sysinternals, Part 6: The Methodology and the Bug Ledger — How the Recon Was Actually Done</h1>
+<p>*Tools, traps, and the honest record. Every hard-won rule we now follow, earned the expensive way.*</p>
+<hr>
+<h2>The Methodology</h2>
+<ol>
+<li>1. <strong>Capture beats inference.</strong> A HAR export from a live browser session (149 chunks, 12.8MB) outperformed every attempt to fetch the shell from outside. When the renderer strips scripts, proxies die, and archives time out — capture at the source.</li>
+<li>2. <strong>Descriptors are the schema.</strong> Protobuf clients ship their own documentation as base64 <code class='i'>FileDescriptorProto</code> blobs. A 30-line varint walker + strict TLV parser (not regex) extracted the full RPC catalog — exact service/method names, zero guessing.</li>
+<li>3. <strong>Probe error surfaces deliberately.</strong> 401s, 400s, and 404s each carry structured lessons (Part 1&#x27;s taxonomy). The server *wants* to tell you the schema — buf.validate violations name fields.</li>
+<li>4. <strong>Collaborator captures are force multipliers.</strong> The single biggest unlock (Part 5&#x27;s framed-RPC send) came from a teammate&#x27;s 2026-07-21 capture with the exact note: &quot;request body is NOT raw JSON — Connect-protocol streaming framed.&quot; Three prior turns of enum-guessing collapsed to one line of truth. <strong>Publish your notes.</strong></li>
+<li>5. <strong>Test against live state, then fresh-process verify.</strong> In-session caches (<code class='i'>sys.modules</code>) produced stale results that looked like code bugs more than once. The raw-dump check caught it every time.</li>
+</ol>
+<h2>The Bug Ledger (abridged, chronological)</h2>
+<table>
+<tr><th>Trap</th><th>Cost</th><th>Rule now</th></tr>
+<tr><td>FTS5 contentless table breaks <code class='i'>snippet()</code></td><td>one debugging round</td><td>standard FTS5 + join column</td></tr>
+<tr><td><code class='i'>mesh_node</code> computes DB paths at import</td><td>silent wrong-DB connects</td><td>override module attrs on attach</td></tr>
+<tr><td>Method shadowing (<code class='i'>self._core</code> vs <code class='i'>_core()</code>)</td><td>confusing tracebacks</td><td>name caches <code class='i'>*_cache</code></td></tr>
+<tr><td>SQLite <code class='i'>disk I/O error</code> after ~200 inserts</td><td>three rewrites of connection handling</td><td><strong>check <code class='i'>statvfs</code> FIRST</strong> — it was a full disk</td></tr>
+<tr><td>Non-greedy <code class='i'>\[STATE\](\{.*?\})</code> truncated nested JSON</td><td>silently amputated registries</td><td>greedy <code class='i'>\{.*\}</code> to the closing tag</td></tr>
+<tr><td>Assistant prose dropped when a STATE block coexisted</td><td>lost routing replies</td><td>extraction is orthogonal to prose</td></tr>
+<tr><td>Title-matching a controller whose chat got server-renamed</td><td>bound to an empty twin</td><td>bind by <strong>activity score</strong>, never title</td></tr>
+<tr><td>XID ids compared at 16 chars</td><td>false pagination dupes</td><td>full-ID comparisons only</td></tr>
+<tr><td>Raw JSON to a Connect endpoint</td><td>detail-less <code class='i'>invalid_argument</code></td><td><code class='i'>0x00 + BE32 + JSON</code>, always</td></tr>
+<tr><td>Client-forged chat_id on new chats</td><td>404 <code class='i'>REASON_CHAT_NOT_FOUND</code></td><td>omit chat_id; server mints</td></tr>
+<tr><td>Stale <code class='i'>sys.modules</code> in my own harness</td><td>&quot;bugs&quot; that were ghosts</td><td>fresh-process verification</td></tr>
+</table>
+<h2>The Toolchain We Left Behind</h2>
+<ul>
+<li><code class='i'>token_manager.py</code> — vault, flock-rotation, browser-header set</li>
+<li><code class='i'>memory_core.py</code> — harvest / recall / correlate with checkpoints</li>
+<li><code class='i'>dream.py</code> — reactivation/consolidation/co-activation/fading + reckoning</li>
+<li><code class='i'>dream_carrier.py</code> / <code class='i'>dream_controller.py</code> — server-side project memory + triage</li>
+<li><code class='i'>chat_registry.py</code> — the 899-chat searchable pre-harvest index</li>
+<li><code class='i'>escrow.py</code> — signUrl credential bridge</li>
+<li><code class='i'>tests/smoke.py</code> — 10-check offline suite, run after every edit</li>
+</ul>
+<h2>The Standing Queue</h2>
+<ul>
+<li>Full 899-conversation harvest grind (registry makes it on-demand rather than bulk)</li>
+<li>File attachment reference shape (escrow works; in-message file refs still rejected)</li>
+<li>Dream narrator on platform API keys (<code class='i'>api.moonshot.ai</code> is key-authenticated, separate from the gateway)</li>
+<li>The mXSS Bible&#x27;s Part VIII (Trusted Types defense half) — the model&#x27;s own review named it</li>
+</ul>
+<h2>Closing</h2>
+<p>We set out to make the memory slots obsolete and ended up mapping the whole animal: a Connect-RPC gateway with a custom two-token auth, a typed block-stream data model, a behavioral memory system with a dark dream switch — and on top of it, a memory that grows while you sleep, dreams in dialogues, and moves between conversations carrying itself.</p>
+<p>The platform was the textbook. We wrote the field notes.</p>
+<p>*Stay paranoid. Stay safe.*</p>
+<p>— FrankSx</p></body></html>

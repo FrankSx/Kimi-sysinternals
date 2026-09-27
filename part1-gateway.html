@@ -1,0 +1,53 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>part1-gateway</title><style>body{background:#0d1117;color:#c9d1d9;font:16px/1.7 Georgia,serif;max-width:860px;margin:0 auto;padding:40px 20px}
+h1{font:26px ui-monospace,monospace;color:#58a6ff;border-bottom:2px solid #58a6ff;padding-bottom:10px}
+h2{font:20px ui-monospace,monospace;color:#f0883e;margin-top:44px;border-bottom:1px solid #30363d;padding-bottom:6px}
+h3{font:16px ui-monospace,monospace;color:#3fb950;margin-top:28px}
+pre.c{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow-x:auto;font:13px/1.6 ui-monospace,monospace;color:#a5d6ff}
+code.i{background:#161b22;padding:1px 6px;border-radius:4px;font:14px ui-monospace,monospace;color:#79c0ff}
+blockquote{border-left:4px solid #f0883e;margin:16px 0;padding:8px 16px;background:#161b22;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:14px ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;vertical-align:top}th{background:#161b22;color:#58a6ff}
+hr{border:none;border-top:1px solid #30363d;margin:32px 0}ul,ol{margin:8px 0;padding-left:28px}li{margin:4px 0}</style></head><body><h1>Kimi Sysinternals, Part 1: The Gateway — Mapping a Connect-RPC Surface Nobody Published</h1>
+<p>*Series: Kimi Sysinternals — what we found diving into the internal systems of a production AI chat platform, and what we built with the knowledge.*</p>
+<hr>
+<h2>The Target</h2>
+<p>kimi.ai&#x27;s web app is a Vue 3 SPA. Every server interaction funnels through a single gateway:</p>
+<pre class='c'><code>
+POST https://www.kimi.ai/apiv2/&lt;package&gt;.&lt;Service&gt;/&lt;Method&gt;
+Authorization: Bearer &lt;jwt&gt;
+Connect-Protocol-Version: 1
+Content-Type: application/connect+json   (streaming) / application/json (unary)
+X-Msh-Device-Id / X-Msh-Session-Id / X-Traffic-Id / X-Language / R-Timezone
+</code></pre>
+<p>This is <strong>Connect-RPC</strong> (Buf&#x27;s protocol) over protobuf — not REST, not GraphQL. The web client is generated protobuf-es code. Nobody had published a map of this surface. We made one.</p>
+<h2>How We Got the Client (When the CDN Was &quot;Unreachable&quot;)</h2>
+<p>The page renderer strips <code class='i'>&lt;script&gt;</code> tags; HTML proxies died; web archives timed out. What worked: <strong>a HAR export from a live browser session</strong> — 149 JS chunks, 12.8MB, including the protobuf descriptor layer (<code class='i'>*_pb.js</code>).</p>
+<p>The descriptor layer is the crown jewel: each <code class='i'>*_pb.js</code> contains a base64 <code class='i'>FileDescriptorProto</code> blob — the service&#x27;s entire schema, compiled in. Decoding it requires a varint-aware protobuf walker (30 lines), and it yields the <strong>exact RPC catalog</strong>: package names, service names, method names.</p>
+<h2>The Catalog</h2>
+<p>126+ methods across 19+ services, decoded from the blobs. The load-bearing ones:</p>
+<table>
+<tr><th>Service</th><th>Methods that matter</th></tr>
+<tr><td><code class='i'>kimi.gateway.chat.v1.ChatService</code></td><td>Chat, ResumeChat, ListChats, ListMessages, GetChat, GetChatShareDocx</td></tr>
+<tr><td><code class='i'>kimi.gateway.feed.v1.FeedService</code></td><td>ListFeeds (the conversation list — with project_id filtering)</td></tr>
+<tr><td><code class='i'>kimi.gateway.file.v1.FileService</code></td><td>Upload (presigned multipart)</td></tr>
+<tr><td><code class='i'>kimi.gateway.project.v1.ProjectService</code></td><td>CreateProject, SetChatProject, ListProjectFiles</td></tr>
+<tr><td><code class='i'>kimi.usersetting.v1.UserSettingService</code></td><td>GetUserSetting, UpdateUserSetting (with updateMask paths)</td></tr>
+<tr><td><code class='i'>kimi.gateway.config.v1.ConfigService</code></td><td>GetConfig, GetAvailableModels</td></tr>
+</table>
+<p>And a full second tier: Search, Swarm, KimiPlus, Context, Tool, Suggest, RemoteControl, Membership, Claw, IM, Skill, Plugin, Notification services.</p>
+<h2>The Wall: Cloudflare 1010</h2>
+<p>Every route — even unauthenticated <code class='i'>/api/config</code> — returns <code class='i'>error code: 1010</code> to non-browser User-Agents. The key: <strong>a full browser header set</strong> (UA + Origin + Referer + Accept + the X-Msh family) sails through. Bearer alone authorizes; no cookies needed.</p>
+<p>This one discovery shaped everything after: from inside a session runtime, with the right headers, the entire gateway answers.</p>
+<h2>The Error Taxonomy (Live-Captured)</h2>
+<table>
+<tr><th>Code</th><th>Shape</th><th>Lesson</th></tr>
+<tr><td>401</td><td><code class='i'>unauthenticated</code> + <code class='i'>REASON_INVALID_AUTH_TOKEN</code></td><td>token dead → rotate</td></tr>
+<tr><td>400</td><td><code class='i'>invalid_argument</code> + buf.validate violations</td><td>schema feedback is generous</td></tr>
+<tr><td>400</td><td><code class='i'>...id_kind=xid,uuidv8...</code></td><td><strong>IDs are XID-in-UUIDv8</strong> — time-ordered</td></tr>
+<tr><td>404</td><td>empty body</td><td>unknown RPC</td></tr>
+<tr><td>1010</td><td>Cloudflare</td><td>send browser headers</td></tr>
+</table>
+<p>That ID leak is quietly huge: chat/message IDs embed a timestamp in their first 4 bytes (XID epoch 2013-01-01). Conversation IDs sort chronologically — incremental sync becomes a watermark comparison, and ID-prefix comparisons must use more than 16 hex chars (they share timestamp prefixes; truncated comparisons look like false duplicates).</p>
+<h2>Why This Matters</h2>
+<p>A platform&#x27;s client bundle is its own documentation if you know where to look. The descriptor blobs gave us the whole API; the error taxonomy told us the ID scheme; the headers got us in. Everything in Parts 2–5 rides on this map.</p>
+<p>*Tools referenced: HAR export, protobuf varint walker, differential probing. Next: Part 2 — the strangest OAuth-like token system we&#x27;ve ever mapped.*</p></body></html>
